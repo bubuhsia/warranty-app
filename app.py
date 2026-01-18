@@ -80,7 +80,46 @@ def save_to_google(data_list):
 #      主程式開始
 # ==========================================
 st.set_page_config(page_title="雲端保固管家", layout="wide")
+🔒 密碼鎖功能 (新增這一段)
+# ==========================================
+def check_password():
+    """檢查密碼是否正確，不正確則停止執行"""
+    
+    # 驗證密碼的內部函數
+    def password_entered():
+        if st.session_state["password"] == st.secrets["app_password"]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # 驗證成功後刪除密碼，不留痕跡
+        else:
+            st.session_state["password_correct"] = False
 
+    # 初始化狀態
+    if "password_correct" not in st.session_state:
+        st.session_state["password_correct"] = False
+
+    # 如果已經驗證通過，就回傳 True，讓程式繼續跑
+    if st.session_state["password_correct"]:
+        return True
+
+    # 如果還沒通過，顯示輸入框
+    st.title("🔒 請輸入家族密碼")
+    st.text_input(
+        "Password", 
+        type="password", 
+        on_change=password_entered, 
+        key="password"
+    )
+    
+    # 如果密碼打錯了，顯示錯誤訊息
+    if "password_correct" in st.session_state and st.session_state["password_correct"] == False:
+        st.error("😕 密碼錯誤，請再試一次")
+
+    return False
+
+# --- 呼叫檢查站 ---
+# 如果 check_password() 回傳 False (代表沒過)，就執行 st.stop() 停在這裡
+if not check_password():
+    st.stop()
 # 初始化
 if 'products' not in st.session_state:
     with st.spinner('正在從 Google 雲端下載資料...'):
