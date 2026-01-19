@@ -266,7 +266,6 @@ if len(st.session_state.products) > 0:
             if days_left < 0: continue
 
         # 通過篩選，加入顯示清單
-        # 把 days_left 塞進 item 方便等等顯示
         item['days_left'] = days_left 
         display_list.append(item)
 
@@ -275,10 +274,11 @@ if len(st.session_state.products) > 0:
     
     if len(display_list) > 0:
         for index, item in enumerate(display_list):
-            # 這裡要注意：原本的 index 是對應 session_state 的位置
-            # 但現在我們篩選過了，如果直接用 enumerate 的 index 會刪錯人
-            # 所以我們要去原始清單找它的「真實位置 (real_index)」
+            # 找出原始清單中的位置
             real_index = st.session_state.products.index(item)
+            
+            # 【關鍵修正】這裡把 index 也加進去 key，確保絕對唯一
+            unique_key_suffix = f"{real_index}_{index}"
 
             with st.container():
                 days_left = item['days_left']
@@ -294,10 +294,12 @@ if len(st.session_state.products) > 0:
                     
                     b_col1, b_col2 = st.columns(2)
                     with b_col1:
-                        if st.button("✏️ 編輯", key=f"edit_{real_index}"): # 使用真實索引
+                        # 使用新的唯一 Key
+                        if st.button("✏️ 編輯", key=f"edit_{unique_key_suffix}"): 
                             edit_item_dialog(item, real_index)
                     with b_col2:
-                        if st.button("🗑️ 刪除", key=f"del_{real_index}"): # 使用真實索引
+                        # 使用新的唯一 Key
+                        if st.button("🗑️ 刪除", key=f"del_{unique_key_suffix}"): 
                             st.session_state.products.pop(real_index)
                             save_to_google(st.session_state.products)
                             st.rerun()
