@@ -2,9 +2,8 @@ import streamlit as st
 import pandas as pd
 import gspread
 import os
+import requests
 from oauth2client.service_account import ServiceAccountCredentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
 from datetime import date
 from dateutil.relativedelta import relativedelta
 
@@ -38,53 +37,48 @@ if not check_password():
     st.stop()
 
 # ==========================================
-#      ☁️ Google 服務連線區 (Sheet + Drive)
+#      ☁️ Google Sheet 連線 & ImgBB 上傳
 # ==========================================
 @st.cache_resource
-def get_creds():
-    scope = [
-        "https://spreadsheets.google.com/feeds", 
-        "https://www.googleapis.com/auth/drive"
-    ]
+def get_google_sheet():
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     if os.path.exists("secrets.json"):
         creds = ServiceAccountCredentials.from_json_keyfile_name("secrets.json", scope)
     else:
         key_dict = st.secrets["gcp_service_account"]
         creds = ServiceAccountCredentials.from_json_keyfile_dict(key_dict, scope)
-    return creds
-
-def get_google_sheet():
-    creds = get_creds()
+    
     client = gspread.authorize(creds)
     sheet = client.open("warranty_db").sheet1
     return sheet
 
-def upload_image_to_drive(file_obj, filename):
-    """將圖片上傳到 Google Drive 並回傳連結"""
+def upload_to_imgbb(file_obj):
+    """將圖片上傳到 ImgBB 並回傳連結 (取代 Imgur)"""
     if file_obj is None:
         return ""
     
     try:
-        creds = get_creds()
-        drive_service = build('drive', 'v3', credentials=creds)
-        folder_id = st.secrets["drive_folder_id"] # 從 Secrets 拿資料夾 ID
-
-        file_metadata = {
-            'name': filename,
-            'parents': [folder_id]
+        api_key = st.secrets["imgbb_api_key"] # 從 Secrets 拿 ID
+        
+        # 準備上傳
+        payload = {
+            "key": api_key,
         }
-        media = MediaIoBaseUpload(file_obj, mimetype=file_obj.type)
+        files = {
+            "image": file_obj.getvalue()
+        }
         
-        file = drive_service.files().create(
-            body=file_metadata, 
-            media_body=media, 
-            fields='id, webContentLink'
-        ).execute()
+        response = requests.post("https://api.imgbb.com/1/upload", data=payload, files=files)
         
-        # 回傳可以直接看的連結
-        return file.get('webContentLink')
+        # 檢查結果
+        if response.status_code == 200:
+            return response.json()['data']['url'] # 回傳圖片網址
+        else:
+            st.error(f"上傳失敗，錯誤代碼：{response.status_code}")
+            return ""
+            
     except Exception as e:
-        st.error(f"圖片上傳失敗：{e}")
+        st.error(f"連線錯誤：{e}")
         return ""
 
 # --- 讀取資料 ---
@@ -95,11 +89,9 @@ def load_data():
         df = pd.DataFrame(data)
         if df.empty: return []
         
-        # 確保有圖片欄位，沒有就補空字串
         if 'product_img' not in df.columns: df['product_img'] = ""
         if 'warranty_img' not in df.columns: df['warranty_img'] = ""
         
-        # 日期轉換
         if 'buy_date' in df.columns:
             df['buy_date'] = pd.to_datetime(df['buy_date'])
         if 'expiry_date' in df.columns:
@@ -117,7 +109,6 @@ def save_to_google(data_list):
         if len(data_list) > 0:
             df = pd.DataFrame(data_list)
             df_export = df.copy()
-            # 轉字串存入 Sheets
             df_export['buy_date'] = df_export['buy_date'].apply(lambda x: x.strftime('%Y-%m-%d') if pd.notnull(x) else "")
             df_export['expiry_date'] = df_export['expiry_date'].apply(lambda x: x.strftime('%Y-%m-%d') if pd.notnull(x) else "")
             
@@ -135,7 +126,7 @@ if 'products' not in st.session_state:
     with st.spinner('正在連線雲端資料庫...'):
         st.session_state.products = load_data()
 
-# --- 新增區塊 (放在最上面) ---
+# --- 新增區塊 ---
 with st.expander("➕ 新增物品 (點我展開)", expanded=True):
     col1, col2 = st.columns([1, 1])
     
@@ -145,32 +136,26 @@ with st.expander("➕ 新增物品 (點我展開)", expanded=True):
         warranty_years = st.number_input("保固年限 (年)", min_value=0, max_value=10, value=2)
     
     with col2:
-        # 分開上傳：產品照 vs 保固卡
         st.markdown("##### 📸 照片上傳")
+        st.caption("照片將存放在 ImgBB 圖床")
         product_file = st.file_uploader("1. 產品外觀照片", type=['png', 'jpg', 'jpeg'])
         warranty_file = st.file_uploader("2. 保固卡/發票照片", type=['png', 'jpg', 'jpeg'])
 
     if st.button("🚀 新增至雲端", type="primary"):
         if name:
             with st.spinner('正在上傳照片並存檔...'):
-                # 1. 計算日期
                 expiry_date = pd.to_datetime(buy_date) + relativedelta(years=warranty_years)
                 
-                # 2. 上傳照片 (如果有的話)
-                p_link = ""
-                w_link = ""
-                if product_file:
-                    p_link = upload_image_to_drive(product_file, f"{name}_產品_{date.today()}.jpg")
-                if warranty_file:
-                    w_link = upload_image_to_drive(warranty_file, f"{name}_保固_{date.today()}.jpg")
+                # 改用 ImgBB 上傳
+                p_link = upload_to_imgbb(product_file) if product_file else ""
+                w_link = upload_to_imgbb(warranty_file) if warranty_file else ""
                 
-                # 3. 建立資料
                 new_item = {
                     "name": name,
                     "buy_date": pd.to_datetime(buy_date),
                     "expiry_date": expiry_date,
-                    "product_img": p_link,   # 新增欄位
-                    "warranty_img": w_link   # 新增欄位
+                    "product_img": p_link,
+                    "warranty_img": w_link
                 }
                 
                 st.session_state.products.append(new_item)
@@ -187,26 +172,20 @@ st.divider()
 st.subheader(f"📦 目前共有 {len(st.session_state.products)} 樣物品")
 
 if len(st.session_state.products) > 0:
-    # 把它變成卡片式排列
     for index, item in enumerate(st.session_state.products):
         with st.container():
-            # 標題與過期計算
             try:
                 expiry_val = item['expiry_date'].date()
             except:
                 expiry_val = pd.to_datetime(item['expiry_date']).date()
             
             days_left = (expiry_val - date.today()).days
-            
-            # 卡片頭部
             status_color = "green" if days_left >= 30 else "orange" if days_left >= 0 else "red"
             status_text = f"✅ 剩餘 {days_left} 天" if days_left >= 0 else f"❌ 已過期 {abs(days_left)} 天"
             
             st.markdown(f"### {item['name']} <span style='color:{status_color}; font-size:0.8em'>({status_text})</span>", unsafe_allow_html=True)
             
-            # 內容分兩欄：左邊文字，右邊照片
             c1, c2 = st.columns([1, 2])
-            
             with c1:
                 st.caption(f"購買日：{pd.to_datetime(item['buy_date']).strftime('%Y-%m-%d')}")
                 st.caption(f"到期日：{expiry_val.strftime('%Y-%m-%d')}")
@@ -217,22 +196,17 @@ if len(st.session_state.products) > 0:
                     st.rerun()
             
             with c2:
-                # 顯示照片 (分頁籤顯示，比較整齊)
-                # 檢查是否有照片
-                has_p = item.get('product_img') and item['product_img'].startswith('http')
-                has_w = item.get('warranty_img') and item['warranty_img'].startswith('http')
+                # 檢查是否有連結
+                has_p = str(item.get('product_img', '')).startswith('http')
+                has_w = str(item.get('warranty_img', '')).startswith('http')
                 
                 if has_p or has_w:
                     tab1, tab2 = st.tabs(["📦 產品照", "🧾 保固卡"])
                     with tab1:
-                        if has_p:
-                            st.image(item['product_img'], use_container_width=True)
-                        else:
-                            st.info("無照片")
+                        if has_p: st.image(item['product_img'], use_container_width=True)
+                        else: st.info("無照片")
                     with tab2:
-                        if has_w:
-                            st.image(item['warranty_img'], use_container_width=True)
-                        else:
-                            st.info("無照片")
+                        if has_w: st.image(item['warranty_img'], use_container_width=True)
+                        else: st.info("無照片")
             
             st.divider()
